@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shopify Tycoon</title>
+<meta name="theme-color" content="#10131a">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%233ddc84%22/><text x=%2250%22 y=%2272%22 font-size=%2260%22 text-anchor=%22middle%22 font-family=%22sans-serif%22 font-weight=%22bold%22 fill=%22%23142016%22>S</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- Loading overlay: pure CSS, self-hiding — main.js never needs to know. -->
+<div id="boot" aria-hidden="true">
+  <div class="boot-logo">Shopify<span>Tycoon</span></div>
+  <div class="boot-dots"><i></i><i></i><i></i></div>
+</div>
+<script>
+window.addEventListener('load', function () {
+  requestAnimationFrame(function () {
+    var b = document.getElementById('boot');
+    if (!b) return;
+    b.classList.add('done');
+    setTimeout(function () { b.remove(); }, 700);
+  });
+});
+</script>
+<div id="app">
+  <!-- 3D world fills the viewport; every UI surface floats above it -->
+  <canvas id="map"></canvas>
+
+  <!-- ============ TOP BAR ============ -->
+  <header id="topbar">
+    <div class="logo">Shopify<span>Tycoon</span></div>
+    <div class="topstats">
+      <div class="topstat" id="stat-cash" title="Cash on hand"><span class="ico">$</span><span id="cash-val">0</span></div>
+      <div class="topstat" id="stat-net" title="Average daily profit, last 7 days"><span id="net-val">—</span></div>
+      <div class="topstat" id="stat-date"><span id="date-val"></span></div>
+      <div class="topstat small" id="stat-weather" style="display:none"><span id="weather-val"></span></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="speed-controls">
+      <button id="speed-pause" class="btn speed" title="Pause (space)">❚❚</button>
+      <button id="speed-1" class="btn speed active" title="Normal speed">▶</button>
+      <button id="speed-3" class="btn speed" title="Fast (2)">▶▶</button>
+      <button id="speed-8" class="btn speed" title="Blazing (3)">▶▶▶</button>
+    </div>
+    <div class="sys-controls">
+      <button id="music-btn" class="btn icon" title="Music — click to start / next track, double-click to stop">♪</button>
+      <button id="save-btn" class="btn icon" title="Save game">Save</button>
+      <button id="new-btn" class="btn icon" title="Start a new game">New</button>
+    </div>
+  </header>
+
+  <!-- ============ MAP OVERLAYS ============ -->
+  <div id="map-modes">
+    <button id="mode-terrain" class="btn active" title="Terrain view">Map</button>
+    <button id="mode-business" class="btn" title="Business view: awareness (green) &amp; market penetration (blue) per settlement; red pip = heavy competition">Biz</button>
+  </div>
+  <div id="map-tooltip" class="hidden"></div>
+  <div id="map-hint" class="hidden"></div>
+
+  <!-- toasts & event banner -->
+  <div id="toasts">
+    <div id="goal-toast" class="hidden"></div>
+    <div id="event-banner" class="hidden"></div>
+  </div>
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside id="sidebar">
+    <nav id="tabs">
+      <button class="tab active" data-tab="dashboard" title="Dashboard"><span class="tab-label">Home</span></button>
+      <button class="tab" data-tab="products" title="Products"><span class="tab-label">Products</span></button>
+      <button class="tab" data-tab="stores" title="Stores &amp; premises"><span class="tab-label">Stores</span></button>
+      <button class="tab" data-tab="staff" title="Staff"><span class="tab-label">Staff</span></button>
+      <button class="tab" data-tab="marketing" title="Marketing"><span class="tab-label">Ads</span></button>
+      <button class="tab" data-tab="research" title="Customer research &amp; competition"><span class="tab-label">Research</span></button>
+      <button class="tab" data-tab="empire" title="Empire — post-IPO scale levers"><span class="tab-label">Empire</span></button>
+    </nav>
+    <div id="panel"></div>
+  </aside>
+
+  <!-- keyboard hint chips (shown once, ever — ui.js + localStorage) -->
+  <div id="key-hints" class="hidden" aria-hidden="true">
+    <span class="chip">Space</span> pause
+    <span class="sep">·</span>
+    <span class="chip">1</span><span class="chip">2</span><span class="chip">3</span> speed
+  </div>
+
+  <!-- ============ NEWS TICKER ============ -->
+  <footer id="ticker"><div id="ticker-inner">Welcome to Shopify Tycoon.</div></footer>
+</div>
+
+<!-- Modal root -->
+<div id="modal-root" class="hidden"><div id="modal-box"></div></div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

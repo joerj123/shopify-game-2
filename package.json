@@ -1,0 +1,19 @@
+{
+  "name": "shopify-tycoon-3d",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "serve dist -l ${PORT:-3000}"
+  },
+  "dependencies": {
+    "serve": "^14.2.4",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
