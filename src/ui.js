@@ -14,6 +14,7 @@ import {
   NATIONAL_CAMPAIGN, AUTOMATION_TIERS, BRAND_TIERS, EXPORT_LEVELS, ACQUISITION_COST,
   PRIMELY_ENTRY_REVENUE, setFranchising, startNationalCampaign, buyAutomation,
   buyBrandTier, upgradeExport, acquireRivalOps,
+  deleteProduct, setAutoPrice, segmentFit, advisorTips, ADVISOR_INFO, DROPSHIP_MARKUP,
 } from './sim.js';
 import { CATEGORIES } from './data/catalog.js';
 import { SEGMENTS } from './world.js';
@@ -34,6 +35,10 @@ export class UI {
     this._cashShown = undefined;       // currently displayed (tweened) cash value
     this._cashTarget = undefined;
     this._hintsChecked = false;
+    this._tickerQueue = [];            // headlines waiting for their 3s slot
+    this._tickerSeen = null;           // last state.news item already enqueued
+    this._tickerBusy = false;
+    document.getElementById('ticker-inner')?.classList.add('show');
     document.addEventListener('pointerdown', (e) => { if (e.target.matches('input[type=range]')) this.dragging = true; });
     document.addEventListener('pointerup', () => { this.dragging = false; });
 
@@ -113,11 +118,35 @@ export class UI {
     }, 6000);
   }
 
+  // News ticker v2: one headline at a time, cross-faded on a fixed cadence.
+  // No marquee — at 8× speed the old scroll restarted on every new item and
+  // flickered. New items queue up; the queue drops old ones under pressure so
+  // the display never lags far behind the sim.
   renderTicker() {
+    const items = this.s.news;
+    if (!items.length) return;
+    const last = items[items.length - 1];
+    if (last === this._tickerSeen) return;
+    // enqueue everything we haven't shown yet (bounded)
+    const seenIdx = this._tickerSeen != null ? items.lastIndexOf(this._tickerSeen) : -1;
+    for (const it of items.slice(seenIdx + 1)) this._tickerQueue.push(it);
+    if (this._tickerQueue.length > 3) this._tickerQueue.splice(0, this._tickerQueue.length - 3);
+    this._tickerSeen = last;
+    if (!this._tickerBusy) this._drainTicker();
+  }
+
+  _drainTicker() {
+    const next = this._tickerQueue.shift();
+    if (next == null) { this._tickerBusy = false; return; }
+    this._tickerBusy = true;
     const el = document.getElementById('ticker-inner');
-    const items = this.s.news.slice(-6);
-    const html = items.length ? items.join('&nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;') : 'Welcome to Shopify Tycoon.';
-    if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+    el.classList.remove('show');
+    setTimeout(() => {
+      el.innerHTML = next; // news is sim-authored html (product names pre-escaped)
+      el.classList.add('show');
+    }, this.reduced ? 0 : 220);
+    clearTimeout(this._tickerT);
+    this._tickerT = setTimeout(() => this._drainTicker(), 3200);
   }
 
   // ================= panel dispatcher =================
@@ -139,12 +168,17 @@ export class UI {
       staff: () => this.renderStaff(),
       marketing: () => this.renderMarketing(),
       research: () => this.renderResearch(),
+      advisors: () => this.renderAdvisors(),
+      goals: () => this.renderGoals(),
       empire: () => this.renderEmpire(),
     }[this.tab];
     // preserve scroll across re-renders
     const sc = this.panel.scrollTop;
     fn();
     this.panel.scrollTop = sc;
+    // any [data-goto=tab] button jumps to that tab
+    this.panel.querySelectorAll('[data-goto]').forEach(b =>
+      b.addEventListener('click', () => document.querySelector(`[data-tab=${b.dataset.goto}]`)?.click()));
     this._afterRender(tabChanged);
   }
 
@@ -234,12 +268,15 @@ export class UI {
       ${debtHtml}
       ${warHtml}
       ${stockouts.length ? `<div class="alert-banner"><b>Out of stock:</b> ${stockouts.map(p => esc(p.name)).join(', ')} — you're turning customers away! <button class="btn small danger" data-goto="products">Fix</button></div>` : ''}
+      ${advisorStrip(s)}
       <div class="tiles">
         ${tile('Revenue / 7d', fmtMoney(rev7), 'money', delta ? `${delta > 0 ? '▲' : '▼'} ${Math.abs(delta).toFixed(0)}% vs prior week` : '', delta >= 0 ? 'up' : 'down')}
         ${tile('Profit / 7d', fmtMoney(m.profit7), m.profit7 >= 0 ? 'good' : 'bad', m.profit7 >= 0 ? 'in the black' : 'burning cash', m.profit7 >= 0 ? 'up' : 'down')}
         ${tile('Customers', m.totalCustomers.toLocaleString(), 'good', `+${m.new7} this week (${m.organic7 > 0 ? Math.round(m.organic7) + ' organic' : 'all paid'})`, 'up')}
-        ${tile('CAC (paid)', m.cac != null ? fmtMoney(m.cac) : '—', 'cyan', 'per marketing-won customer')}
-        ${tile('LTV', fmtMoney(m.ltv), 'cyan', ratio != null ? `LTV:CAC = ${ratio.toFixed(1)}× ${ratio >= 3 ? '✓ healthy' : ratio >= 1 ? '· thin' : '✗ losing on ads'}` : 'lifetime value', ratio != null ? (ratio >= 3 ? 'up' : ratio < 1 ? 'down' : '') : '')}
+        ${tile('Orders / 7d', m.ord7.toLocaleString(), '', `${m.newOrd7.toLocaleString()} first-time · ${m.repOrd7.toLocaleString()} returning`)}
+        ${tile('CAC (paid)', m.cac != null ? fmtMoney(m.cac) : '—', 'cyan', 'cost per NEW customer won by ads')}
+        ${tile('LTV', fmtMoney(m.ltv), 'cyan', ratio != null ? `LTV:CAC = ${ratio.toFixed(1)}× ${ratio >= 3 ? '✓ healthy' : ratio >= 1 ? '· thin' : '✗ losing on ads'}` : 'margin on repeat orders over a customer\'s life', ratio != null ? (ratio >= 3 ? 'up' : ratio < 1 ? 'down' : '') : '')}
+        ${tile('Satisfaction', pct(m.satisfaction), m.satisfaction > 0.8 ? 'good' : m.satisfaction > 0.6 ? '' : 'bad', 'drives repeat orders & blocks poaching')}
         ${tile('On-time ship', pct(s.onTime), s.onTime > 0.85 ? 'good' : s.onTime > 0.6 ? '' : 'bad', `shoppers expect ≤${s.expectedDeliveryDays ?? 4}d${s.queue > 0 ? ` · ${s.queue} queued` : ''}`)}
       </div>
       ${chartBox('Daily profit — last 90 days', sparkSigned(profitD), profitD.length ? '±' + fmtShort(Math.max(...profitD.map(Math.abs), 1)) : '')}
@@ -270,12 +307,8 @@ export class UI {
       ${scale > 1.02 ? `<div class="small-note tight">Rents &amp; wages run ×${scale.toFixed(2)} at your size — landlords and labour markets notice a giant.</div>` : ''}
       ${runway != null ? `<div class="prow"><span class="k">Runway at current losses</span><span class="v ${runway < 30 ? 'bad' : ''}">${runway} days</span></div>` : ''}
       ${debtRunway != null ? `<div class="prow"><span class="k bad">Bankruptcy (−$50k) at current losses</span><span class="v bad">~${Math.max(0, debtRunway)} days</span></div>` : ''}
-      <div class="psub">The road to $1B</div>
-      ${goalLadder(s)}
+      ${nextGoalRow(s)}
     `;
-    this.panel.querySelector('[data-goto]')?.addEventListener('click', () => {
-      document.querySelector('[data-tab=products]').click();
-    });
   }
 
   // ================= PRODUCTS =================
@@ -292,6 +325,13 @@ export class UI {
       </div>
       <div class="prow"><span class="k">Product slots</span><span class="v ${listedN >= cap ? 'bad' : ''}">${listedN} / ${cap} listed</span></div>
       <div class="small-note">You can only merchandise so many products at once — upgrade the online store for more slots. Physical stores shelve only their best-fitting few.</div>
+      ${(() => {
+        const hasCmo = s.execs.some(e => e.role === 'cmo');
+        return `<label class="auto-label autoprice-row ${hasCmo ? '' : 'disabled'}" title="${hasCmo ? 'The CMO probes the demand curve weekly and nudges every listed price toward its profit sweet spot' : 'Hire a CMO (Staff tab) to unlock'}">
+          <input type="checkbox" data-act="autoprice" ${s.autoPrice ? 'checked' : ''} ${hasCmo ? '' : 'disabled'}>
+          CMO pricing desk — auto-optimize prices${hasCmo ? '' : ' <span class="dim">(needs a CMO)</span>'}
+        </label>`;
+      })()}
       ${s.products.filter(p => p.listed).length ? `<div class="focus-banner">
         <div class="fb-line"><span class="fb-label ${focusCls}">Brand: ${esc(focus.label)}</span>
         ${focus.topCat ? `<span class="fb-stat">${CATEGORIES[focus.topCat].name} ${Math.round(focus.topShare * 100)}%</span>` : ''}
@@ -312,6 +352,12 @@ export class UI {
     this.bindProductEvents();
     this.panel.querySelector('[data-act=browse-catalog]')?.addEventListener('click', () => this.modalCatalog());
     this.panel.querySelector('[data-act=open-rnd]')?.addEventListener('click', () => this.modalRnd());
+    this.panel.querySelector('[data-act=autoprice]')?.addEventListener('change', (e) => {
+      const r = setAutoPrice(this.s, e.target.checked);
+      this.game.jukebox.sfx(r.ok ? 'click' : 'bad');
+      if (!r.ok && r.msg) this.flashNote(r.msg);
+      this.renderPanel(true);
+    });
   }
 
   productCard(p) {
@@ -342,6 +388,7 @@ export class UI {
         <div class="prod-attrs">
           ${pips('STY', p.style)} ${pips('QUA', p.quality)} ${pips('UTL', p.utility)} ${pips('ECO', p.eco)} ${pips('TEC', p.tech)}
         </div>
+        ${segChips(p)}
         ${isOut ? `<div class="stockout-strip">${p.source === 'catalog' ? 'No store stock — shelves are going bare' : 'Out of stock'} — missed ~${p.missedToday || 0} sales today</div>` : ''}
         <div class="prod-price-row">
           <span class="price-val money">$${p.price}</span>
@@ -355,19 +402,20 @@ export class UI {
             <span class="${p.inventory <= 10 ? 'bad' : ''}">stock: ${p.inventory}${incoming ? ` <span class="cyan">(+${incoming} inbound)</span>` : ''}</span>
             <button class="btn small" data-stock="${p.id}" data-qty="100">+100</button>
             <button class="btn small" data-stock="${p.id}" data-qty="500">+500 <span class="green">−20%</span></button>
-            <label class="auto-label"><input type="checkbox" data-auto="${p.id}" ${p.autoRestock ? 'checked' : ''}> auto</label>
-          ` : `<span class="dim">dropship $${p.cost}/unit (online)</span>`}
-          <span class="dim sold">sold ${p.soldTotal}</span>
+            <label class="auto-label" title="Reorders ahead of demand so you never hit zero"><input type="checkbox" data-auto="${p.id}" ${p.autoRestock ? 'checked' : ''}> auto</label>
+          ` : ''}
+          <span class="dim sold">${(p.vel || 0) >= 0.1 ? `~${p.vel < 10 ? p.vel.toFixed(1) : Math.round(p.vel)}/day · ` : ''}sold ${p.soldTotal}</span>
+          ${!p.listed ? `<button class="btn small danger" data-del="${p.id}" title="Discontinue — leftover stock liquidated at 40%">Delete</button>` : ''}
         </div>
         ${p.source === 'catalog' ? `
         <div class="prod-actions wholesale-row">
-          <span class="${hasStores && p.listed && (p.inventory || 0) <= 0 ? 'bad' : ''}">store stock: ${p.inventory || 0}${incoming ? ` <span class="cyan">(+${incoming} inbound)</span>` : ''}</span>
+          <span class="${hasStores && p.listed && (p.inventory || 0) <= 0 ? 'bad' : ''}">stock: ${p.inventory || 0}${incoming ? ` <span class="cyan">(+${incoming} inbound)</span>` : ''}</span>
           <button class="btn small" data-wholesale="${p.id}" data-qty="20" title="Minimum wholesale order">+20</button>
           <button class="btn small" data-wholesale="${p.id}" data-qty="200">+200 <span class="green">−8%</span></button>
           <button class="btn small" data-wholesale="${p.id}" data-qty="500">+500 <span class="green">−15%</span></button>
-          <label class="auto-label" title="Reorders 200 wholesale when stock runs low (needs a store)"><input type="checkbox" data-auto="${p.id}" ${p.autoRestock ? 'checked' : ''}> auto</label>
+          <label class="auto-label" title="Reorders ahead of demand so you never hit zero"><input type="checkbox" data-auto="${p.id}" ${p.autoRestock ? 'checked' : ''}> auto</label>
         </div>
-        <div class="small-note tight">Wholesale cases $${p.wholesaleCost}/unit by sea — physical stores sell only shelf stock. Online keeps dropshipping.</div>` : ''}
+        <div class="small-note tight">Stocked units cost <b class="green">$${p.wholesaleCost}</b>/unit and ship online or from store shelves. Anything unstocked dropships at <b>$${p.cost}</b>/unit — stock is margin.</div>` : ''}
         ${fitHtml}
       </div>
     </div>`;
@@ -413,6 +461,27 @@ export class UI {
         const p = this.s.products.find(x => x.id === cb.dataset.auto);
         p.autoRestock = cb.checked;
         this.game.jukebox.sfx('click');
+      });
+    });
+    this.panel.querySelectorAll('[data-del]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const p = this.s.products.find(x => x.id === btn.dataset.del);
+        if (!p) return;
+        const close = this.modal(`
+          <h2>Discontinue ${esc(p.name)}?</h2>
+          <p class="small-note">${(p.inventory || 0) > 0 ? `The ${p.inventory} leftover units are liquidated at 40 cents on the dollar.` : 'It has no stock left.'} ${p.source === 'catalog' ? 'You can re-source it from the catalog later.' : 'R&D products are gone for good.'}</p>
+          <div class="modal-btns">
+            <button class="btn" id="del-cancel">Keep it</button>
+            <button class="btn danger" id="del-go">Delete</button>
+          </div>`);
+        document.getElementById('del-cancel').addEventListener('click', close);
+        document.getElementById('del-go').addEventListener('click', () => {
+          const r = deleteProduct(this.s, p.id);
+          this.game.jukebox.sfx(r.ok ? 'build' : 'bad');
+          if (!r.ok && r.msg) this.flashNote(r.msg);
+          close();
+          this.renderPanel(true);
+        });
       });
     });
   }
@@ -812,6 +881,59 @@ export class UI {
       b.addEventListener('click', () => this.act(() => researchSettlement(this.s, b.dataset.research))));
   }
 
+  // ================= ADVISORS =================
+  // Rule-based coaching: what's broken, why it matters, what to do.
+  renderAdvisors() {
+    const s = this.s;
+    const tips = advisorTips(s);
+    let html = `<div class="ptitle">Advisors</div>
+      <div class="small-note">Your team's read on the business — worst problems first. Fix the red ones before they fix you.</div>`;
+    if (!tips.length) {
+      html += `<div class="card advisor-clear"><div class="ac-icon">✅</div>
+        <div><b>Nothing on fire.</b><div class="small-note tight">The advisors are drinking coffee. Grow marketing, add products, or expand — and check back when something changes.</div></div></div>`;
+    }
+    for (const t of tips) html += tipCard(t);
+    html += `<div class="psub">How the machine works</div>
+      <div class="card cheat-card">
+        <div class="prow"><span class="k">Awareness</span><span class="v dim">ads &amp; stores make shoppers notice you</span></div>
+        <div class="prow"><span class="k">Fit &amp; price</span><span class="v dim">right product, fair price → they buy</span></div>
+        <div class="prow"><span class="k">CAC</span><span class="v dim">ad spend ÷ NEW customers it won</span></div>
+        <div class="prow"><span class="k">Satisfaction</span><span class="v dim">45% on-time · 30% quality · 25% support</span></div>
+        <div class="prow"><span class="k">Repeat orders</span><span class="v dim">happy customers reorder — that margin is LTV</span></div>
+        <div class="prow"><span class="k">Margins</span><span class="v dim">dropship &lt; wholesale stock &lt; your own products</span></div>
+      </div>`;
+    this.panel.innerHTML = html;
+  }
+
+  // ================= GOALS (the road to $1B) =================
+  renderGoals() {
+    const s = this.s;
+    const next = GOALS.find(g => !s.goalsDone.includes(g.id));
+    const cal = calInfo(s);
+    const daysIn = s.day - 2 * DAYS_PER_MONTH;
+    let html = `<div class="ptitle">The road to $1B</div>`;
+    if (s.won) {
+      html += `<div class="card win-banner"><b>YOU WON.</b> ${fmtMoney(s.lifetime.revenue)} lifetime — the island is yours. Sandbox mode from here.</div>`;
+    } else if (next) {
+      html += `<div class="small-note">Every milestone pays out. $1M (the IPO) is the starting line — the win is <b>$1,000,000,000</b> lifetime revenue.</div>`;
+    }
+    html += goalLadder(s);
+    html += `<div class="psub">Company history</div>
+      <div class="prow"><span class="k">Founded</span><span class="v">${daysIn.toLocaleString()} days ago (year ${cal.year})</span></div>
+      <div class="prow"><span class="k">Lifetime revenue</span><span class="v money">${fmtMoney(s.lifetime.revenue)}</span></div>
+      <div class="prow"><span class="k">Orders shipped</span><span class="v">${s.lifetime.orders.toLocaleString()}</span></div>
+      <div class="prow"><span class="k">Customers won</span><span class="v">${s.lifetime.customers.toLocaleString()}</span></div>
+      <div class="prow"><span class="k">Marketing spent</span><span class="v">${fmtMoney(s.lifetime.mkt)}</span></div>
+      ${s.debtInterestPaid ? `<div class="prow"><span class="k">Lost to overdraft interest</span><span class="v bad">${fmtMoney(s.debtInterestPaid)}</span></div>` : ''}`;
+    if (s.questsDone.length < QUESTS.length) {
+      html += `<div class="psub">First steps</div>` + QUESTS.map(q => {
+        const done = s.questsDone.includes(q.id);
+        return `<div class="quest-row ${done ? 'done' : ''}"><span class="q-check">${done ? '✓' : ''}</span><span class="q-desc">${esc(q.desc)}</span><span class="q-reward">${done ? 'paid' : '+' + fmtMoney(q.reward)}</span></div>`;
+      }).join('');
+    }
+    this.panel.innerHTML = html;
+  }
+
   // ================= EMPIRE (post-IPO scalers) =================
   renderEmpire() {
     const s = this.s;
@@ -987,7 +1109,7 @@ export class UI {
     const avail = catalogAvailable(s);
     const close = this.modal(`
       <h2>Shopify Catalog</h2>
-      <p class="small-note">Online orders dropship — no inventory to hold, but Shopify takes a cut (thinner margins). Physical stores need wholesale cases (much better unit price, ordered from the product card). $500 listing fee each.</p>
+      <p class="small-note">Catalog products can start selling online today: orders dropship automatically (no inventory, but a hefty per-unit cut). Order wholesale cases later for a much better unit price — stocked units ship online <i>and</i> fill store shelves. $500 listing fee each. The "loved by" chips show who buys it — match them to what your surveyed towns look like.</p>
       <div class="filter-row">
         <select id="cat-filter"><option value="">All categories</option>
         ${Object.entries(CATEGORIES).map(([k, c]) => `<option value="${k}">${c.name}</option>`).join('')}</select>
@@ -1003,8 +1125,9 @@ export class UI {
           <div class="prod-info">
             <div class="prod-name">${esc(c.name)}</div>
             <span class="prod-cat" style="--chip:${CATEGORIES[c.cat].color}">${CATEGORIES[c.cat].name}</span>
-            <div class="small-note tight">cost $${(c.cost * 1.62).toFixed(2)} · MSRP $${c.msrp}${c.season ? ' · ' + c.season : ''}</div>
+            <div class="small-note tight">dropship $${(c.cost * DROPSHIP_MARKUP).toFixed(2)} · wholesale $${(c.cost * 1.15).toFixed(2)} · MSRP $${c.msrp}${c.season ? ' · ' + c.season : ''}</div>
             <div class="prod-attrs">${pips('STY', c.style)} ${pips('QUA', c.quality)}</div>
+            ${segChips({ ...c, price: c.msrp })}
             <button class="btn small green" data-source="${c.id}">Source $500</button>
           </div>
         </div>`).join('') || '<p class="small-note">Nothing left in this category.</p>';
@@ -1277,6 +1400,62 @@ function segBar(segments) {
 
 function tile(label, value, cls = '', delta = '', deltaCls = '') {
   return `<div class="tile"><div class="t-label">${label}</div><div class="t-value ${cls}">${value}</div>${delta ? `<div class="t-delta ${deltaCls}">${delta}</div>` : ''}</div>`;
+}
+
+// one advisor tip → card (sev drives the accent color)
+const SEV_LABEL = { urgent: 'FIX NOW', warn: 'ATTENTION', tip: 'TIP' };
+function tipCard(t) {
+  const who = ADVISOR_INFO[t.who] || { name: t.who, icon: '💡' };
+  return `<div class="card tip-card sev-${t.sev}">
+    <div class="tip-head">
+      <span class="tip-icon">${who.icon}</span>
+      <span class="tip-title">${esc(t.title)}</span>
+      <span class="tip-sev">${SEV_LABEL[t.sev] || ''}</span>
+    </div>
+    <div class="tip-body">${esc(t.body)}</div>
+    <div class="tip-foot"><span class="tip-who">${esc(who.name)}</span>
+      ${t.tab ? `<button class="btn small" data-goto="${t.tab}">Go →</button>` : ''}</div>
+  </div>`;
+}
+
+// dashboard headline: the advisors' top concerns (urgent/warn only)
+function advisorStrip(s) {
+  const top = advisorTips(s).filter(t => t.sev !== 'tip').slice(0, 2);
+  if (!top.length) return '';
+  return `<div class="advisor-strip">
+    ${top.map(t => `<div class="as-row sev-${t.sev}">
+      <span class="tip-icon">${(ADVISOR_INFO[t.who] || {}).icon || '💡'}</span>
+      <span class="as-text"><b>${esc(t.title)}</b></span>
+      ${t.tab ? `<button class="btn small" data-goto="${t.tab}">Fix</button>` : ''}
+    </div>`).join('')}
+    <button class="as-more" data-goto="advisors">All advice →</button>
+  </div>`;
+}
+
+// dashboard footer: compact pointer at the next milestone (full ladder lives
+// in the Goals tab)
+function nextGoalRow(s) {
+  const next = GOALS.find(g => !s.goalsDone.includes(g.id));
+  if (!next) return '';
+  const thr = REV_GOALS[next.id];
+  const p = thr ? Math.min(100, s.lifetime.revenue / thr * 100) : null;
+  return `<div class="psub">Next milestone</div>
+    <div class="card next-goal">
+      <div class="prow"><span class="k strong">→ ${esc(next.name)}</span>
+        ${next.reward ? `<span class="v amber">+${fmtMoney(next.reward)}</span>` : ''}</div>
+      <div class="small-note tight">${esc(next.desc)}</div>
+      ${p != null ? `<div class="progress goal-progress"><div style="width:${p.toFixed(1)}%"></div></div>
+      <div class="ladder-progress-label">${fmtMoney(s.lifetime.revenue)} / ${fmtMoney(thr)} lifetime revenue</div>` : ''}
+      <button class="btn small" data-goto="goals">The road to $1B →</button>
+    </div>`;
+}
+
+// which segments love this product — colored chips for the top fits
+function segChips(p, n = 2) {
+  const fits = segmentFit(p).slice(0, n).filter(x => x.rel > 0.25);
+  if (!fits.length) return '';
+  return `<div class="seg-chips" title="Which shopper segments this appeals to most">loved by ${fits.map(x =>
+    `<span class="seg-chip" style="--seg:${x.color}">${esc(x.name)}</span>`).join(' ')}</div>`;
 }
 
 // the "road to $1B" ladder — next goal highlighted, revenue goals get a

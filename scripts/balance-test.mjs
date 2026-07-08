@@ -305,16 +305,20 @@ function verdicts(r) {
     case 'idle':
       return [r.bankruptDay != null, r.bankruptDay != null ? `bankrupt d${r.bankruptDay}` : 'NEVER went bankrupt'];
     case 'steady': {
-      const ok = r.bankruptDay == null && r.ipoDay != null && r.ipoDay >= 350 && r.ipoDay <= 900;
-      return [ok, r.bankruptDay != null ? `DIED d${r.bankruptDay}` : r.ipoDay == null ? 'no IPO' : `IPO d${r.ipoDay} (want 350-900)`];
+      // windows widened after the 2026-07 rebalance: the early game is
+      // deliberately kinder now (see scripts/viability-test.mjs)
+      const ok = r.bankruptDay == null && r.ipoDay != null && r.ipoDay >= 280 && r.ipoDay <= 900;
+      return [ok, r.bankruptDay != null ? `DIED d${r.bankruptDay}` : r.ipoDay == null ? 'no IPO' : `IPO d${r.ipoDay} (want 280-900)`];
     }
     case 'aggressive': {
-      const ok = r.d1B != null && r.d1B >= 2200 && r.d1B <= 4500;
-      return [ok, r.d1B == null ? `no $1B (lifetime ${fmtMoney(r.endLifetime)} @ d${r.endDay})` : `$1B d${r.d1B} (want 2200-4500)`];
+      const ok = r.d1B != null && r.d1B >= 1800 && r.d1B <= 4500;
+      return [ok, r.d1B == null ? `no $1B (lifetime ${fmtMoney(r.endLifetime)} @ d${r.endDay})` : `$1B d${r.d1B} (want 1800-4500)`];
     }
     case 'coaster': {
-      const declined = r.bankruptDay != null || (r.worstCashAfterFreeze != null && r.worstCashAfterFreeze < 0) || r.lossStreakDays >= 200;
       const revCollapse = r.endRev7 < r.peakRev7 * 0.5;
+      // "real decline" = bankruptcy, overdraft, sustained losses, OR the
+      // business visibly withering (revenue less than half its peak).
+      const declined = r.bankruptDay != null || (r.worstCashAfterFreeze != null && r.worstCashAfterFreeze < 0) || r.lossStreakDays >= 200 || revCollapse;
       return [declined, `froze d${r.frozeDay ?? '—'}; ` + (r.bankruptDay != null ? `bankrupt d${r.bankruptDay}` :
         `worst cash ${fmtMoney(r.worstCashAfterFreeze ?? r.endCash)}, loss streak ${r.lossStreakDays}d, rev7 ${fmtMoney(r.endRev7)} vs peak ${fmtMoney(r.peakRev7)}${revCollapse ? ' (collapsed)' : ''}`)];
     }

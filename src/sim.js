@@ -34,23 +34,29 @@ export const EXPECTED_DELIVERY_DAYS = 4; // baseline; state.expectedDeliveryDays
 export const WAGES = { shipping: 22, support: 26, engineer: 55 }; // per day, before scale inflation
 export const STAFF_INFO = {
   shipping: { name: 'Warehouse Crew', wage: WAGES.shipping, desc: '+30 packages/day shipping capacity each.' },
-  support: { name: 'Support Agents', wage: WAGES.support, desc: 'Each handles ~50 tickets/day. Coverage lifts satisfaction.' },
+  support: { name: 'Support Agents', wage: WAGES.support, desc: 'Each handles ~50 tickets/day of customer tickets (~1 agent per 300 orders/day). Good coverage keeps satisfaction up — and satisfaction drives repeat orders, word-of-mouth demand, and defends against rival poaching.' },
   engineer: { name: 'R&D Engineers', wage: WAGES.engineer, desc: 'Each speeds product development by 45%.' },
 };
 
+// Catalog sourcing economics: dropshipping is convenient but expensive per
+// unit; wholesale cases (pre-paid stock) are much cheaper. Stocked units ship
+// online OR from store shelves — dropship only fills what stock can't.
+export const DROPSHIP_MARKUP = 1.75;
+export const WHOLESALE_MARKUP = 1.15;
+
 export const CHANNELS = {
   social: {
-    name: 'Social Ads', max: 800, half: 180,
+    name: 'Social Ads', max: 800, half: 120,
     desc: 'Reaches cities & towns. Great for online awareness among younger segments.',
     profile: { city: 1.25, town: 0.85, village: 0.3 },
   },
   search: {
-    name: 'Search Ads', max: 600, half: 140,
+    name: 'Search Ads', max: 600, half: 100,
     desc: 'Captures buyers already looking. Boosts online conversion directly.',
     profile: { city: 1.0, town: 1.0, village: 1.0 },
   },
   tv: {
-    name: 'TV Spots', max: 2000, half: 700,
+    name: 'TV Spots', max: 2000, half: 550,
     desc: 'Expensive, but reaches everyone — even remote villages. Builds broad awareness.',
     profile: { city: 0.9, town: 1.0, village: 1.15 },
   },
@@ -126,6 +132,7 @@ export function newGame(seed = (Date.now() & 0x7fffffff)) {
     ownCount: 0,
     staff: { shipping: 0, support: 0, engineer: 0 },
     marketing: { social: 0, search: 0, tv: 0, flyers: 0 },
+    autoPrice: false,            // CMO pricing desk (needs a CMO)
     rivalPresenceBy,             // rivalId → sid → presence
     rivalPresence: {},           // sid → aggregate pressure (renderer contract)
     rivals: newRivalAgents(),    // agent state per rival
@@ -170,7 +177,11 @@ export function newGame(seed = (Date.now() & 0x7fffffff)) {
 // main.js must call migrateSave(state) after loading ANY save; it upgrades a
 // v3 save in place and is a no-op on v4 saves.
 export function migrateSave(state) {
-  if (!state || state.v >= 4) return state;
+  if (!state) return state;
+  // lightweight v4.x defaults (safe on every load)
+  state.autoPrice = state.autoPrice ?? false;
+  for (const p of state.products || []) p.vel = p.vel ?? 0;
+  if (state.v >= 4) return state;
   state.v = 4;
   state.won = false; state.wonDay = null;
   // rivals → agents + per-rival presence split
@@ -274,8 +285,8 @@ export function addCatalogProduct(state, baseId) {
     style: base.style, quality: base.quality, utility: base.utility, eco: base.eco, tech: base.tech,
     season: base.season, sports: !!base.sports,
     source: 'catalog',
-    cost: Math.round(base.cost * 1.62 * 100) / 100, // dropship convenience isn't free
-    wholesaleCost: round2(base.cost * 1.15),        // case price for store stock
+    cost: round2(base.cost * DROPSHIP_MARKUP),        // dropship convenience isn't free
+    wholesaleCost: round2(base.cost * WHOLESALE_MARKUP), // case price for pre-paid stock
     price: base.msrp,
     msrp: base.msrp,
     listed: slotFree,
@@ -404,7 +415,7 @@ export function orderWholesale(state, productId, qty) {
 // ---------------- premises / stores ----------------
 export const PREMISE_COSTS = {
   office:   { city: { setup: 0, rent: 95, days: 0 },  town: { setup: 0, rent: 45, days: 0 },  village: { setup: 0, rent: 20, days: 0 } },
-  store:    { city: { setup: 14000, rent: 95, days: 16 }, town: { setup: 6500, rent: 42, days: 11 }, village: { setup: 2600, rent: 16, days: 7 } },
+  store:    { city: { setup: 12000, rent: 78, days: 16 }, town: { setup: 5500, rent: 32, days: 11 }, village: { setup: 2200, rent: 12, days: 7 } },
   warehouse:{ city: { setup: 11000, rent: 60, days: 15 }, town: { setup: 8000, rent: 38, days: 12 }, village: { setup: 6000, rent: 22, days: 9 } },
 };
 export const OFFICE_LEVELS = [
@@ -448,9 +459,9 @@ export function launchOnlineStore(state) {
 }
 
 export const STORE_LEVELS = [
-  { name: 'Pop-up', capture: 1, shelf: 3 },
-  { name: 'Storefront', capture: 1.8, shelf: 6, upgradeCost: 7000, buildDays: 8 },
-  { name: 'Flagship', capture: 3.1, shelf: 10, upgradeCost: 18000, buildDays: 14 },
+  { name: 'Pop-up', capture: 1.3, shelf: 4 },
+  { name: 'Storefront', capture: 2.3, shelf: 6, upgradeCost: 7000, buildDays: 8 },
+  { name: 'Flagship', capture: 3.8, shelf: 10, upgradeCost: 18000, buildDays: 14 },
 ];
 
 export function openStore(state, sid) {
@@ -528,6 +539,26 @@ export function toggleListing(state, productId) {
   p.listed = true;
   return { ok: true };
 }
+// Discontinue a product. Must be unlisted; leftover warehouse stock is
+// liquidated at 40 cents on the dollar, shelf stock is written off.
+export function deleteProduct(state, productId) {
+  const i = state.products.findIndex(p => p.id === productId);
+  if (i < 0) return { ok: false };
+  const p = state.products[i];
+  if (p.listed) return { ok: false, msg: 'Unlist it first' };
+  if (p.incoming && p.incoming.length) return { ok: false, msg: 'Inbound stock is still on the water — wait for it to arrive' };
+  const unit = p.source === 'catalog' ? (p.wholesaleCost ?? p.cost) : p.cost;
+  const salvage = Math.round((p.inventory || 0) * unit * 0.4);
+  state.cash += salvage;
+  for (const pr of state.premises) {
+    if (pr.stock) delete pr.stock[p.id];
+    if (pr.recent) delete pr.recent[p.id];
+  }
+  state.products.splice(i, 1);
+  pushNews(state, `<b>${p.name}</b> discontinued${salvage ? ` — leftover stock liquidated for ${fmtMoney(salvage)}` : ''}.`);
+  return { ok: true, salvage };
+}
+
 export function staffCount(state) { return state.staff.shipping + state.staff.support + state.staff.engineer; }
 
 export function hire(state, role) {
@@ -547,7 +578,7 @@ export function fire(state, role) {
 // ---------------- executives (SIM2) ----------------
 export const EXEC_ROLES = {
   ceo:      { name: 'CEO', salary: 0, hireCost: 0, desc: 'You. Awareness grows 50% faster and the store performs better wherever you are.' },
-  cmo:      { name: 'CMO', salary: 260, hireCost: 8000, desc: 'Marketing channels work ~35% harder within ~15 tiles of their post.' },
+  cmo:      { name: 'CMO', salary: 260, hireCost: 8000, desc: 'Marketing channels work ~35% harder within ~15 tiles of their post. Unlocks the pricing desk (auto-optimizes your prices weekly).' },
   coo:      { name: 'COO', salary: 300, hireCost: 9000, desc: '+25% ship capacity, +60% store replenishment island-wide; extra store service where posted. Unlocks warehouse automation.' },
   research: { name: 'Head of Research', salary: 240, hireCost: 7500, desc: 'At HQ: R&D ×1.6. In the field: passively surveys settlements within ~12 tiles.' },
   retail:   { name: 'Retail Director', salary: 220, hireCost: 7000, desc: '+30% store conversion where posted; unlocks Flagship refits beyond HQ.' },
@@ -635,7 +666,8 @@ export function productAppeal(p, seg, wealth, eventCtx, comp = 1) {
   const priceSens = Math.min(1.3, seg.priceSens + (eventCtx.priceSensDelta || 0));
   const elasticity = (0.9 + priceSens * 1.8) * (0.7 + 0.3 * Math.min(2, comp));
   const priceAppeal = Math.min(1.5, Math.pow(Math.max(0.03, 1 / Math.max(0.2, ratio)), elasticity));
-  return attrScore * catAff * priceAppeal;
+  const freq = (CATEGORIES[p.cat] && CATEGORIES[p.cat].freq) || 1; // purchase frequency
+  return attrScore * catAff * priceAppeal * freq;
 }
 
 export function seasonMult(p, cal, eventCtx) {
@@ -681,6 +713,53 @@ export function brandFocus(state) {
     if (Object.keys(counts).length >= 5) label = 'Empire';
   }
   return { hhi, topCat, topShare: topN / listed.length, bonus, label };
+}
+
+// How strongly each shopper segment likes a product, independent of any one
+// settlement (neutral wealth/competition). For the "who buys this?" UI chips.
+export function segmentFit(p) {
+  const ctx = {};
+  const scores = Object.entries(SEGMENTS).map(([key, seg]) => ({
+    key, name: seg.name, color: seg.color,
+    score: productAppeal(p, seg, 1, ctx, 1),
+  })).sort((a, b) => b.score - a.score);
+  const max = Math.max(0.0001, scores[0].score);
+  for (const s of scores) s.rel = s.score / max; // 0..1 relative to the best fit
+  return scores;
+}
+
+// ---------------- CMO pricing desk ----------------
+// With a CMO hired you can hand pricing over: once a week she probes the
+// demand curve per product and nudges prices toward the profit sweet spot.
+export function setAutoPrice(state, on) {
+  if (on && !state.execs.some(e => e.role === 'cmo')) return { ok: false, msg: 'Hire a CMO to run the pricing desk' };
+  state.autoPrice = !!on;
+  pushNews(state, on ? 'The CMO takes over pricing — weekly sweeps toward each product\'s sweet spot.' : 'Pricing is back in your hands.');
+  return { ok: true };
+}
+
+export function optimalPrice(state, p) {
+  const ctx = eventContext(state);
+  const cal = calInfo(state);
+  const unitCost = p.source === 'catalog'
+    ? ((p.inventory || 0) > 0 ? (p.wholesaleCost ?? p.cost) : p.cost)
+    : p.cost;
+  let best = p.price, bestV = -Infinity;
+  const probe = Object.assign({}, p);
+  for (let m = 0.7; m <= 1.751; m += 0.05) {
+    const price = Math.max(Math.ceil(unitCost) + 1, Math.round(p.msrp * m));
+    probe.price = price;
+    let vol = 0;
+    for (const s of state.world.settlements) {
+      const comp = Math.min(2, rivalPressure(state, s));
+      let a = 0;
+      for (const [k, w] of Object.entries(s.segments)) a += productAppeal(probe, SEGMENTS[k], s.wealth, ctx, comp) * w;
+      vol += a * s.pop * (0.15 + s.awareness);
+    }
+    const v = vol * seasonMult(probe, cal, ctx) * (price - unitCost);
+    if (v > bestV) { bestV = v; best = price; }
+  }
+  return best;
 }
 
 // ---------------- flash sale ----------------
@@ -981,6 +1060,9 @@ export function simulateDay(state) {
   const world = state.world;
   const scale = costScale(state);
 
+  // snapshot per-product sales for today's velocity EMA (drives auto-restock)
+  for (const p of state.products) p._soldStart = p.soldTotal;
+
   // --- incoming stock: freighter → port → lorry → warehouse ---
   for (const p of state.products) {
     if (!p.incoming || !p.incoming.length) continue;
@@ -1082,22 +1164,21 @@ export function simulateDay(state) {
     if (state.rnd.daysLeft <= 0) finishRnd(state);
   }
 
-  // --- auto-restock (own products reorder; catalog reorders wholesale if any store exists) ---
-  const anyStore = state.premises.some(p => p.kind === 'store' && premiseActive(p) && !p.franchise);
+  // --- auto-restock: predictive reordering. Reorder BEFORE stockout using the
+  // product's sales velocity and the sea+land lead time, so shelves never go
+  // bare while a freighter is still mid-ocean.
+  const crunchNow = state.activeEvents.some(e => e.key === 'supplycrunch');
+  const leadDays = (crunchNow ? 6 : 3) + landLegDays(state) + 1; // sea + lorry + buffer
   for (const p of state.products) {
-    if (!p.autoRestock) continue;
+    if (!p.autoRestock || !p.listed) continue;
     const inbound = (p.incoming || []).reduce((a, o) => a + o.qty, 0);
-    if (p.source === 'own') {
-      if ((p.inventory || 0) + inbound < 60) {
-        const r = orderStock(state, p.id, 200);
-        if (r.ok) pushNews(state, `Auto-restock: 200 × <b>${p.name}</b> ordered (${fmtMoney(r.total)}).`);
-      }
-    } else if (anyStore) {
-      if ((p.inventory || 0) + inbound < 40) {
-        const r = orderWholesale(state, p.id, 200);
-        if (r.ok) pushNews(state, `Auto-restock (wholesale): 200 × <b>${p.name}</b> (${fmtMoney(r.total)}).`);
-      }
-    }
+    const vel = p.vel || 0;
+    // cover the lead time plus a few safety days; floor keeps slow sellers stocked
+    const reorderAt = Math.max(p.source === 'own' ? 40 : 25, Math.ceil(vel * (leadDays + 4)));
+    if ((p.inventory || 0) + inbound > reorderAt) continue;
+    const qty = Math.max(p.source === 'own' ? 100 : 60, Math.min(800, Math.ceil(vel * 21)));
+    const r = p.source === 'own' ? orderStock(state, p.id, qty) : orderWholesale(state, p.id, qty);
+    if (r.ok && p.source === 'own') pushNews(state, `Auto-restock: ${qty} × <b>${p.name}</b> ordered ahead of demand (${fmtMoney(r.total)}).`);
   }
 
   // --- flash sale ticks down ---
@@ -1107,6 +1188,20 @@ export function simulateDay(state) {
 
   // --- rivals act ---
   rivalTick(state, cal);
+
+  // --- CMO pricing desk: weekly sweep toward each product's sweet spot ---
+  if (state.autoPrice && state.execs.some(e => e.role === 'cmo') && state.day % 7 === 3) {
+    const changes = [];
+    for (const p of state.products) {
+      if (!p.listed) continue;
+      const target = optimalPrice(state, p);
+      if (Math.abs(target - p.price) <= Math.max(1, p.price * 0.04)) continue;
+      const np = Math.round(p.price + (target - p.price) * 0.5); // converge, don't whipsaw
+      changes.push(`<b>${p.name}</b> $${p.price}→$${np}`);
+      p.price = np;
+    }
+    if (changes.length) pushNews(state, `CMO pricing desk: ${changes.slice(0, 3).join(', ')}${changes.length > 3 ? ` +${changes.length - 3} more` : ''}.`);
+  }
 
   // --- marketing → awareness (with per-channel attribution weights) ---
   const storesBySid = {};
@@ -1121,7 +1216,7 @@ export function simulateDay(state) {
   const dailyRev = sum(state.roll.revenue) / Math.max(1, state.roll.revenue.length);
   const mktPlanned = state.marketing.social + state.marketing.search + state.marketing.tv + state.marketing.flyers;
   const complacent = dailyRev > 5000 && !nationalOn && mktPlanned < 0.012 * dailyRev;
-  const decay = complacent ? 0.975 : 0.986;
+  const decay = complacent ? 0.968 : 0.986;
   for (const s of world.settlements) {
     let gain = 0;
     let effMult = 1;
@@ -1144,6 +1239,9 @@ export function simulateDay(state) {
       chWeight[ch] += g * s.pop;
     }
     if (nationalOn) gain += 0.028 * effMult; // national campaign blankets the island
+    // a physical store is a daily billboard: locals learn the brand by walking past
+    const localStore = storesBySid[s.id];
+    if (localStore) gain += 0.004 * (1 + localStore.level * 0.5);
     s.awareness = Math.min(1, s.awareness + gain * (1 - s.awareness));
     s.awareness *= decay; // keep spending or fade — faster fade when you coast at scale
   }
@@ -1187,16 +1285,21 @@ export function simulateDay(state) {
   const warBySid = {};
   for (const w of state.priceWars) warBySid[w.sid] = w;
 
-  // online sale: own products draw the central pool; catalog dropships freely
+  // online sale: own products draw the central pool; catalog ships from
+  // pre-paid wholesale stock first (better unit cost), then dropships the
+  // rest at the marked-up per-order price. Stock = margin.
   const sellOnline = (p, units) => {
     if (p.source === 'own') {
       const sold = Math.min(units, p.inventory || 0);
       p.inventory -= sold;
       p.missedToday += units - sold;
       missedStock += units - sold;
-      return { sold, unitCost: p.cost, paidNow: false }; // stock already paid for
+      return { sold, cogs: sold * p.cost, cogsPaid: 0 }; // stock already paid for
     }
-    return { sold: units, unitCost: p.cost, paidNow: true }; // dropship — paid per order, worse margin
+    const fromStock = Math.min(units, p.inventory || 0);
+    p.inventory -= fromStock;
+    const drop = units - fromStock;
+    return { sold: units, cogs: fromStock * (p.wholesaleCost ?? p.cost) + drop * p.cost, cogsPaid: drop * p.cost };
   };
   // store sale: only what's on the shelf sells (own OR wholesale stock)
   const sellStore = (pr, p, units) => {
@@ -1208,7 +1311,7 @@ export function simulateDay(state) {
     pr.missedToday += missed; p.missedToday += missed; missedStock += missed;
     pr.demandToday += units; pr.metToday += sold;
     pr.recent[p.id] = (pr.recent[p.id] || 0) * 0.7 + units * 0.3; // demand forecast EMA
-    return { sold, unitCost: p.source === 'own' ? p.cost : (p.wholesaleCost ?? p.cost), paidNow: false };
+    return { sold, cogs: sold * (p.source === 'own' ? p.cost : (p.wholesaleCost ?? p.cost)), cogsPaid: 0 };
   };
 
   for (const s of world.settlements) {
@@ -1219,7 +1322,7 @@ export function simulateDay(state) {
 
     // reputation gates demand: unhappy customers talk.
     const rep = 0.25 + 0.75 * Math.pow(s.satisfaction, 1.6);
-    const shopperBase = s.pop * 0.00058 * ctx.demandMult * rep;
+    const shopperBase = s.pop * 0.0007 * ctx.demandMult * rep;
     const rivalP = rivalPressure(state, s);
     const comp = Math.min(2, rivalP);
     // price war: you're forced to match dumping prices — volume holds, margin bleeds
@@ -1260,8 +1363,8 @@ export function simulateDay(state) {
             p.soldTotal += r.sold;
             sOrders += r.sold;
             sRevenue += r.sold * p.price * (ctx.priceMult || 1) * warMult;
-            cogs += r.sold * r.unitCost;
-            if (r.paidNow) cogsPaid += r.sold * r.unitCost;
+            cogs += r.cogs;
+            cogsPaid += r.cogsPaid;
           }
         }
       }
@@ -1270,14 +1373,15 @@ export function simulateDay(state) {
         let capture = STORE_LEVELS[store.level].capture * (ctx.footfallSid === s.id ? 2 : 1);
         if (retail && retail.sid === s.id) capture *= 1.3; // Retail Director on the floor
         if (ceo && ceo.sid === s.id) capture *= 1.15;      // CEO shakes hands
-        const foot = shopperBase * segW * (1 - s.onlineAffinity * 0.55) * (0.25 + s.awareness * 0.75) * capture * 0.65;
+        // a shopfront pulls passers-by even before anyone's heard of the brand
+        const foot = shopperBase * segW * (1 - s.onlineAffinity * 0.55) * (0.45 + s.awareness * 0.55) * capture * 1.1;
         const stocked = shelf;
         if (stocked.length && foot > 0.001) {
           const appeals = stocked.map(p =>
             Math.pow(Math.max(0, productAppeal(p, seg, s.wealth, ctx, comp) * seasonMult(p, cal, ctx) * srcMod(p) * focus.bonus), 1.6));
           const A = appeals.reduce((a, b) => a + b, 0) * (ctx.attention || 1);
           const share = A / (A + rivalP * 0.8 + 0.85); // rivals compete a bit less on the high street
-          let purchases = foot * share * 0.6;
+          let purchases = foot * share * 0.8;          // walk-ins convert better than browsers
           purchases = Math.floor(purchases + (rng.next() < (purchases % 1) ? 1 : 0));
           if (store.franchise) {
             // franchisees run their own stock; you book a royalty on their sales
@@ -1300,8 +1404,8 @@ export function simulateDay(state) {
               p.soldTotal += r.sold;
               orders += r.sold;
               revenue += r.sold * p.price * (ctx.priceMult || 1) * warMult;
-              cogs += r.sold * r.unitCost;
-              if (r.paidNow) cogsPaid += r.sold * r.unitCost;
+              cogs += r.cogs;
+              cogsPaid += r.cogsPaid;
               // walk-ins don't need shipping
             }
           }
@@ -1353,9 +1457,11 @@ export function simulateDay(state) {
   const expDays = state.expectedDeliveryDays ?? EXPECTED_DELIVERY_DAYS;
   let onTimeSum = 0, onTimeN = 0;
   for (const o of perSettlementOrders) {
-    const transit = 1 + o.dist / 13 + (o.storm ? 2.5 : 0) + ctx.shipDelay;
+    // real-world carrier noise: even a healthy operation misses a few — the
+    // rate should breathe, not sit pinned at 100%
+    const transit = 1 + o.dist / 13 + (o.storm ? 2.5 : 0) + ctx.shipDelay + rng.range(0, 1.7);
     const total = transit + backlogDays;
-    const onTime = total <= expDays ? 1 : Math.max(0, 1 - (total - expDays) * 0.3);
+    const onTime = total <= expDays ? rng.range(0.955, 1) : Math.max(0, 1 - (total - expDays) * 0.3);
     onTimeSum += onTime * o.units; onTimeN += o.units;
   }
   // truck animations: batched — one truck per route per day
@@ -1403,7 +1509,7 @@ export function simulateDay(state) {
   if (listedOnline.length || Object.keys(storesBySid).length) {
     for (const s of world.settlements) {
       if (s.customers <= 0) continue;
-      const rate = Math.pow(s.satisfaction, 2.2) * 0.011 * ctx.demandMult;
+      const rate = Math.pow(s.satisfaction, 2.2) * 0.013 * ctx.demandMult;
       let units = s.customers * rate;
       units = Math.floor(units + (rng.next() < (units % 1) ? 1 : 0));
       if (units <= 0) continue;
@@ -1425,8 +1531,9 @@ export function simulateDay(state) {
       }
       if (r.sold <= 0) continue;
       p.soldTotal += r.sold;
-      repeatOrders += r.sold; revenue += r.sold * p.price * (ctx.priceMult || 1) * warMult; cogs += r.sold * r.unitCost;
-      if (r.paidNow) cogsPaid += r.sold * r.unitCost;
+      repeatOrders += r.sold; revenue += r.sold * p.price * (ctx.priceMult || 1) * warMult;
+      cogs += r.cogs;
+      cogsPaid += r.cogsPaid;
       if (listedOnline.length) state.queue += Math.round(r.sold * 0.7);
     }
   }
@@ -1510,6 +1617,12 @@ export function simulateDay(state) {
     pushRoll14(state.mktAttrib[ch].cust, cust);
   }
 
+  // --- per-product sales velocity EMA (units/day, all channels) ---
+  for (const p of state.products) {
+    const soldToday = p.soldTotal - (p._soldStart || 0);
+    p.vel = round2((p.vel ?? 0) * 0.75 + soldToday * 0.25);
+  }
+
   // --- lifetime + rolling metrics ---
   state.lifetime.revenue += revenue;
   state.lifetime.orders += orders;
@@ -1525,6 +1638,7 @@ export function simulateDay(state) {
 
   const row = {
     day: state.day, revenue, orders, profit, newCustomers,
+    repeatOrders, newOrders: Math.max(0, orders - repeatOrders),
     customers: totalCustomers, satisfaction: avgSat, awareness: avgAware,
     cash: state.cash, queue: state.queue, onTime: state.onTime,
     missedStock, mkt: mktToday, cogs, rent, wages, refunds,
@@ -1809,7 +1923,11 @@ export function metrics(state) {
     ? state.world.settlements.reduce((a, s) => a + s.satisfaction * s.customers, 0) / totalCustomers : 0.72;
   const repeat = Math.min(0.9, Math.pow(avgSat, 2.2) * 0.6);
   const ltv = aov * marginRate * (1 / (1 - repeat));
-  return { cac, ltv, aov, rev7, ord7, new7, profit7, organic7, attrCust7, channels, satisfaction: avgSat, repeat, totalCustomers };
+  // new vs repeat orders (7d) — CAC buys the first column, LTV lives in the second
+  const h7 = state.history.slice(-7);
+  const repOrd7 = h7.reduce((a, r) => a + (r.repeatOrders || 0), 0);
+  const newOrd7 = h7.reduce((a, r) => a + (r.newOrders ?? r.orders), 0);
+  return { cac, ltv, aov, rev7, ord7, new7, profit7, organic7, attrCust7, channels, satisfaction: avgSat, repeat, totalCustomers, repOrd7, newOrd7 };
 }
 
 // ---------------- goals: the road to $1B ----------------
@@ -1849,6 +1967,166 @@ function checkGoals(state, row) {
       }
     }
   }
+}
+
+// ---------------- advisors ----------------
+// Rule-based diagnostics: what's going well, what's broken, and what to do
+// about it. Each tip: { sev: 'urgent'|'warn'|'tip', who, title, body, tab }.
+// who ∈ finance | product | marketing | ops | support | strategy.
+export const ADVISOR_INFO = {
+  finance:   { name: 'CFO desk',      icon: '💰' },
+  product:   { name: 'Merchandising', icon: '📦' },
+  marketing: { name: 'Marketing',     icon: '📣' },
+  ops:       { name: 'Operations',    icon: '🚚' },
+  support:   { name: 'Customer care', icon: '🎧' },
+  strategy:  { name: 'The board',     icon: '🧭' },
+};
+
+export function advisorTips(state) {
+  const tips = [];
+  const add = (sev, who, title, body, tab) => tips.push({ sev, who, title, body, tab });
+  const m = metrics(state);
+  const h7 = state.history.slice(-7);
+  const net7 = h7.length ? h7.reduce((a, r) => a + r.profit, 0) / h7.length : 0;
+  const dailyRev = h7.length ? m.rev7 / h7.length : 0;
+  const listed = state.products.filter(p => p.listed);
+
+  // ---- finance ----
+  if (state.cash < 0) {
+    add('urgent', 'finance', 'You are in overdraft',
+      `Interest is ${fmtMoney(Math.max(1, Math.round(-state.cash * 0.0015)))}/day and the bank forecloses at −$50k. Cut marketing and rents you can't feed, and check every listed product actually makes money per sale.`, 'dashboard');
+  } else if (net7 < 0 && state.cash > 0) {
+    const runway = Math.floor(state.cash / -net7);
+    if (runway < 60) add('urgent', 'finance', `Runway: ~${runway} days at current losses`,
+      `You're burning ${fmtMoney(-net7)}/day. Biggest levers: marketing you can't convert (check LTV:CAC), rent on premises that don't pay for themselves, and negative-margin products.`, 'dashboard');
+  }
+  // dropship-heavy sellers: stock = margin
+  for (const p of listed) {
+    if (p.source !== 'catalog' || (p.vel || 0) < 2 || (p.inventory || 0) > 0) continue;
+    const gain = round2((p.cost - (p.wholesaleCost ?? p.cost)) * p.vel);
+    if (gain > 8) add('warn', 'finance', `${p.name}: dropshipping is eating your margin`,
+      `It sells ~${Math.round(p.vel)}/day at $${p.cost}/unit dropship cost. Wholesale cases cost $${p.wholesaleCost}/unit — keeping it in stock would add ~${fmtMoney(gain)}/day of margin. Order wholesale (and turn on auto-restock).`, 'products');
+  }
+
+  // ---- product ----
+  const noRestock = listed.filter(p => (p.vel || 0) > 0.5 && (p.inventory || 0) <= 0 && !p.autoRestock && (p.source === 'own' || state.premises.some(x => x.kind === 'store' && premiseActive(x))));
+  for (const p of noRestock.slice(0, 2)) {
+    add('urgent', 'product', `${p.name} is out of stock`,
+      `You're turning shoppers away. Order stock now — and tick "auto" so the warehouse reorders before it hits zero next time.`, 'products');
+  }
+  if (listed.length) {
+    // price sanity vs the demand curve (cap the probe work)
+    for (const p of listed.slice(0, 8)) {
+      if ((p.vel || 0) < 0.2 && p.soldTotal < 5) continue;
+      const opt = optimalPrice(state, p);
+      if (p.price > opt * 1.35) add('warn', 'product', `${p.name} looks overpriced`,
+        `At $${p.price} shoppers balk — the profit sweet spot is around $${opt}. Drop the price (or hire a CMO and let the pricing desk handle it).`, 'products');
+      else if (p.price < opt * 0.7) add('tip', 'product', `${p.name} could charge more`,
+        `It's priced at $${p.price} but demand would bear ~$${opt}. You're leaving margin on the table.`, 'products');
+    }
+    const duds = listed.filter(p => (p.vel || 0) < 0.3 && p.soldTotal >= 1 && listed.length > 2);
+    for (const p of duds.slice(0, 2)) {
+      const best = segmentFit(p)[0];
+      add('tip', 'product', `${p.name} barely sells`,
+        `~${(p.vel || 0).toFixed(1)}/day. It appeals most to ${best.name} — if your markets don't have many, reprice it, or unlist and delete it to free the slot.`, 'products');
+    }
+    const focus = brandFocus(state);
+    if (focus.bonus < 0.95 && listed.length >= 4) add('tip', 'product', 'Your range is scattered',
+      `A junk-drawer catalog converts worse (appeal ×${focus.bonus.toFixed(2)}). Lean into ${focus.topCat ? CATEGORIES[focus.topCat].name : 'one category'} until you're big enough to be everything to everyone.`, 'products');
+  }
+  const cap = listingCap(state);
+  if (listed.length < cap && state.cash > 3000 && state.onlineStore) {
+    add('tip', 'product', `${cap - listed.length} product slot${cap - listed.length > 1 ? 's' : ''} sitting empty`,
+      'More listed products = more chances to match what each town wants. Source from the catalog or start R&D.', 'products');
+  }
+  if (!state.rnd && state.staff.engineer > 0) add('tip', 'product', 'Your engineers are idle',
+    `${state.staff.engineer} R&D engineer${state.staff.engineer > 1 ? 's' : ''} on payroll with no project running. Start one, or let them go.`, 'products');
+  else if (!state.rnd && state.cash > 20000 && m.rev7 > 3000 && !state.products.some(p => p.source === 'own')) {
+    add('tip', 'product', 'Time for a product of your own?',
+      'Catalog dropshipping caps your margins. R&D products cost more up front but earn ~65–75% margins, sell better (shoppers prefer originals), and unlock exports later.', 'products');
+  }
+
+  // ---- marketing ----
+  const ratio = m.cac != null && m.cac > 0 ? m.ltv / m.cac : null;
+  if (ratio != null && ratio < 1) add('urgent', 'marketing', 'Your ads lose money',
+    `CAC is ${fmtMoney(m.cac)} but a customer is only worth ${fmtMoney(m.ltv)} (LTV). Cut the worst channel and raise satisfaction — happier customers reorder, which lifts LTV.`, 'marketing');
+  let worst = null, best = null;
+  for (const [ch, d] of Object.entries(m.channels)) {
+    if (d.spend14 <= 0) continue;
+    if (d.cac == null && d.spend14 > 200) worst = worst || { ch, dead: true };
+    else if (d.cac != null) {
+      if (!worst || (worst.cac != null && d.cac > worst.cac)) worst = { ch, cac: d.cac };
+      if (!best || d.cac < best.cac) best = { ch, cac: d.cac };
+    }
+  }
+  if (worst && worst.dead) add('warn', 'marketing', `${CHANNELS[worst.ch].name} won zero customers in 14 days`,
+    'That budget is doing nothing. Move it to a channel that converts.', 'marketing');
+  else if (worst && best && worst.ch !== best.ch && worst.cac > best.cac * 3 && worst.cac > m.ltv) {
+    add('tip', 'marketing', `Shift budget: ${CHANNELS[worst.ch].name} → ${CHANNELS[best.ch].name}`,
+      `${CHANNELS[worst.ch].name} pays ${fmtMoney(worst.cac)}/customer; ${CHANNELS[best.ch].name} pays ${fmtMoney(best.cac)}. Channels have diminishing returns, so spread — but not into money pits.`, 'marketing');
+  }
+  const mktPlanned = Object.values(state.marketing).reduce((a, b) => a + b, 0);
+  if (dailyRev > 5000 && mktPlanned < 0.012 * dailyRev) add('warn', 'marketing', 'You\'ve gone quiet',
+    `Marketing is under 1.2% of revenue — awareness now decays faster and rivals fill the silence. Spend up or run a national campaign.`, 'marketing');
+  if (mktPlanned === 0 && state.onlineStore && m.rev7 < 2000) add('warn', 'marketing', 'Nobody knows you exist',
+    'Awareness drives every sale and it decays daily. Put at least a small daily budget on Social or TV.', 'marketing');
+
+  // ---- ops ----
+  const office = state.premises.find(p => p.kind === 'office');
+  if (office) {
+    let shipCap = OFFICE_LEVELS[office.level].shipCap
+      + state.premises.filter(p => p.kind === 'warehouse' && premiseActive(p)).length * 90
+      + state.staff.shipping * 30;
+    if (state.execs.some(e => e.role === 'coo' && e.sid)) shipCap *= 1.25;
+    if (state.automation > 0) shipCap *= AUTOMATION_TIERS[state.automation - 1].mult;
+    if (state.queue > shipCap * 1.5 && state.queue > 30) add('urgent', 'ops', 'Warehouse backlog is building',
+      `${state.queue} packages queued vs ~${Math.round(shipCap)}/day capacity. Late orders tank satisfaction and get refunded after ~8 days. Hire warehouse crew, upgrade the office, or build a warehouse.`, 'staff');
+  }
+  if (state.onTime < 0.82 && m.ord7 > 20) add('warn', 'ops', `Only ${Math.round(state.onTime * 100)}% of orders arrive on time`,
+    `Shoppers expect ≤${state.expectedDeliveryDays ?? 4}-day delivery. Late deliveries are the biggest satisfaction drag. Clear the queue, and build warehouses closer to far-flung customers.`, 'stores');
+  const badStores = state.premises.filter(p => p.kind === 'store' && premiseActive(p) && !p.franchise && (p.serviceLevel ?? 1) < 0.8);
+  if (badStores.length) {
+    const s0 = state.world.settlements.find(x => x.id === badStores[0].sid);
+    add('warn', 'ops', `${badStores.length > 1 ? `${badStores.length} stores have` : `The ${s0?.name} store has`} bare shelves`,
+      'Stores only sell what the daily replenishment run puts on shelves. Keep the central warehouse stocked (wholesale/own stock + auto-restock) and raise shelf logistics with crew or warehouses.', 'stores');
+  }
+
+  // ---- support ----
+  const tickets = (m.ord7 / 7) * 0.16;
+  const supportCap = state.staff.support * 50 + 12;
+  if (tickets > supportCap * 1.1) {
+    const need = Math.ceil((tickets - 12) / 50) - state.staff.support;
+    add('warn', 'support', 'Support is drowning',
+      `~${Math.round(tickets)} tickets/day vs capacity ${supportCap}. Unanswered tickets drag satisfaction, and satisfaction drives repeat orders and defends against poaching. Hire ${Math.max(1, need)} more agent${need > 1 ? 's' : ''} (~1 per 300 orders/day).`, 'staff');
+  }
+  if (m.satisfaction < 0.62 && m.totalCustomers > 50) {
+    const listedQ = listed.length ? listed.reduce((a, p) => a + p.quality, 0) / listed.length : 0.5;
+    const coverage = Math.min(1, supportCap / Math.max(1, tickets));
+    const parts = [
+      { k: 'product quality', v: listedQ, w: '30%' },
+      { k: 'on-time delivery', v: state.onTime, w: '45%' },
+      { k: 'support coverage', v: coverage, w: '25%' },
+    ].sort((a, b) => a.v - b.v);
+    add('urgent', 'support', `Satisfaction is ${Math.round(m.satisfaction * 100)}% and costing you customers`,
+      `It's built from on-time delivery (45%), product quality (30%) and support coverage (25%). Weakest right now: ${parts[0].k} at ${Math.round(parts[0].v * 100)}%. Unhappy customers stop reordering and rivals poach them.`, 'staff');
+  }
+
+  // ---- strategy ----
+  if (!state.onlineStore && state.products.length) add('urgent', 'strategy', 'Launch your online store',
+    'Without it you can only sell through physical stores. $800 puts every settlement on the island in reach.', 'stores');
+  if (!state.world.settlements.some(s => s.researched) && state.lifetime.orders > 20) {
+    add('tip', 'strategy', 'You\'re selling blind',
+      'Survey a settlement (Research tab) to see who lives there and what they want — then stock to match. Start with your HQ town.', 'research');
+  }
+  if (state.priceWars.length) {
+    const w = state.priceWars[0];
+    const sw = state.world.settlements.find(x => x.id === w.sid);
+    add('tip', 'strategy', `Price war in ${sw?.name}`,
+      `${w.daysLeft} days left, revenue there −${Math.round(w.discount * 100)}%. Don't panic-spend to defend it — wars end on their own and both sides bleed. Keep satisfaction high so customers come back.`, 'research');
+  }
+  const order = { urgent: 0, warn: 1, tip: 2 };
+  tips.sort((a, b) => order[a.sev] - order[b.sev]);
+  return tips.slice(0, 12);
 }
 
 // ---------------- news ----------------

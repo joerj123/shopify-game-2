@@ -14,13 +14,13 @@ export const SEGMENTS = {
     name: 'Trendsetters', color: '#e06fae',
     prefs: { style: .95, quality: .45, utility: .2, eco: .5, tech: .6 },
     priceSens: .3, onlineBias: 1.3,
-    cats: { apparel: 1, beauty: .9, gadgets: .7, home: .5, toys: .3, food: .4, outdoor: .2, fitness: .4 },
+    cats: { apparel: 1, beauty: .9, gadgets: .7, home: .5, toys: .3, food: .4, outdoor: .2, fitness: .55 },
   },
   families: {
     name: 'Families', color: '#ffd24d',
     prefs: { style: .3, quality: .6, utility: .85, eco: .4, tech: .3 },
     priceSens: .7, onlineBias: 1.0,
-    cats: { toys: 1, home: .9, food: .8, apparel: .5, gadgets: .4, outdoor: .5, beauty: .3, fitness: .3 },
+    cats: { toys: 1, home: .9, food: .8, apparel: .5, gadgets: .4, outdoor: .5, beauty: .3, fitness: .45 },
   },
   outdoorsy: {
     name: 'Outdoorsy', color: '#6fbf73',
@@ -38,13 +38,13 @@ export const SEGMENTS = {
     name: 'Bargain Hunters', color: '#ff8f5a',
     prefs: { style: .35, quality: .3, utility: .6, eco: .2, tech: .3 },
     priceSens: .95, onlineBias: 1.1,
-    cats: { food: .8, home: .8, toys: .8, apparel: .7, gadgets: .6, fitness: .4, outdoor: .4, beauty: .5 },
+    cats: { food: .8, home: .8, toys: .8, apparel: .7, gadgets: .6, fitness: .5, outdoor: .4, beauty: .5 },
   },
   seniors: {
     name: 'Seniors', color: '#c792ea',
     prefs: { style: .3, quality: .8, utility: .75, eco: .5, tech: .1 },
-    priceSens: .5, onlineBias: .45,
-    cats: { home: 1, food: .9, outdoor: .4, apparel: .4, beauty: .4, toys: .5, gadgets: .15, fitness: .2 },
+    priceSens: .5, onlineBias: .6,
+    cats: { home: 1, food: .9, outdoor: .4, apparel: .4, beauty: .4, toys: .5, gadgets: .15, fitness: .35 },
   },
 };
 
@@ -161,7 +161,7 @@ export function generateWorld(seed) {
         name: names[placed % names.length],
         type, x, y, pop,
         wealth: type === 'city' ? rng.range(0.95, 1.35) : type === 'town' ? rng.range(0.8, 1.1) : rng.range(0.6, 0.95),
-        onlineAffinity: type === 'city' ? rng.range(0.65, 0.85) : type === 'town' ? rng.range(0.4, 0.6) : rng.range(0.18, 0.38),
+        onlineAffinity: type === 'city' ? rng.range(0.65, 0.85) : type === 'town' ? rng.range(0.42, 0.62) : rng.range(0.24, 0.44),
         segments: segMix(rng, type),
         researched: false,
         awareness: 0,
@@ -317,8 +317,10 @@ function dijkstra(tiles, from, to, costOf) {
   return path.reverse();
 }
 
-// BFS through open water from the map edge to the tile beside the port —
-// the shipping lane freighters follow.
+// Weighted search through open water from the map edge to the tile beside the
+// port — the shipping lane freighters follow. Coast-hugging water costs extra
+// so ships (which are longer than a tile) keep a respectful distance from
+// land instead of scraping their hulls along the beach.
 function findSeaLane(tiles, port) {
   const w = MAP_W, h = MAP_H;
   let portWater = null;
@@ -326,30 +328,44 @@ function findSeaLane(tiles, port) {
     if (tiles[(port.y + dy) * w + port.x + dx] === T.WATER) { portWater = { x: port.x + dx, y: port.y + dy }; break; }
   }
   if (!portWater) return [];
+  const nearLand = (x, y) => {
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const t = tiles[ny * w + nx];
+      if (t !== T.WATER) return true;
+    }
+    return false;
+  };
+  const costOf = (x, y) => 1 + (nearLand(x, y) ? 3 : 0);
+  const dist = new Float32Array(w * h).fill(Infinity);
   const prev = new Int32Array(w * h).fill(-2); // -2 unvisited, -1 source
-  const q = [];
+  const open = [];
   for (let x = 0; x < w; x++) {
-    for (const y of [0, h - 1]) if (tiles[y * w + x] === T.WATER && prev[y * w + x] === -2) { prev[y * w + x] = -1; q.push(y * w + x); }
+    for (const y of [0, h - 1]) if (tiles[y * w + x] === T.WATER && prev[y * w + x] === -2) { prev[y * w + x] = -1; dist[y * w + x] = 0; open.push([0, y * w + x]); }
   }
   for (let y = 0; y < h; y++) {
-    for (const x of [0, w - 1]) if (tiles[y * w + x] === T.WATER && prev[y * w + x] === -2) { prev[y * w + x] = -1; q.push(y * w + x); }
+    for (const x of [0, w - 1]) if (tiles[y * w + x] === T.WATER && prev[y * w + x] === -2) { prev[y * w + x] = -1; dist[y * w + x] = 0; open.push([0, y * w + x]); }
   }
   const goal = portWater.y * w + portWater.x;
-  let qi = 0, found = prev[goal] !== -2;
-  while (qi < q.length && !found) {
-    const cur = q[qi++];
+  let found = prev[goal] !== -2;
+  while (open.length && !found) {
+    let bi = 0;
+    for (let i = 1; i < open.length; i++) if (open[i][0] < open[bi][0]) bi = i;
+    const [d, cur] = open.splice(bi, 1)[0];
+    if (d > dist[cur]) continue;
+    if (cur === goal) { found = true; break; }
     const cx = cur % w, cy = (cur / w) | 0;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = cx + dx, ny = cy + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const ni = ny * w + nx;
-      if (prev[ni] !== -2 || tiles[ni] !== T.WATER) continue;
-      prev[ni] = cur;
-      if (ni === goal) { found = true; break; }
-      q.push(ni);
+      if (tiles[ni] !== T.WATER) continue;
+      const nd = d + costOf(nx, ny);
+      if (nd < dist[ni]) { dist[ni] = nd; prev[ni] = cur; open.push([nd, ni]); }
     }
   }
-  if (!found) return [portWater];
+  if (!found && prev[goal] === -2) return [portWater];
   const path = [];
   let cur = goal;
   while (cur >= 0) { path.push({ x: cur % w, y: (cur / w) | 0 }); cur = prev[cur]; }
@@ -431,8 +447,9 @@ export function findRoute(world, from, to) {
     let cur = goal;
     while (cur !== -1) { path.push({ x: cur % w, y: (cur / w) | 0 }); cur = prev[cur]; }
     path.reverse();
-    // thin out long paths for animation smoothness
-    if (path.length > 60) path = path.filter((_, i) => i % 2 === 0 || i === path.length - 1);
+    // NOTE: no thinning — dropping every other point turned right-angle road
+    // corners into diagonals, sending vans through buildings. Full 4-connected
+    // paths keep vehicles on the tarmac.
   } else {
     path = [{ x: from.x, y: from.y }, { x: to.x, y: to.y }];
   }

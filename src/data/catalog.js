@@ -6,15 +6,18 @@
 // If scripts/fetch-catalog.mjs succeeds against the real Catalog API it writes
 // src/data/catalog.live.js which is merged on top of this baked set.
 
+// freq = purchase frequency: how often shoppers buy the category. Consumables
+// (food, beauty) sell in volume at low prices; big-ticket gadgets sell rarely
+// but dear. This is the axis that keeps every category viable.
 export const CATEGORIES = {
-  apparel:  { name: 'Apparel',  color: '#e06fae' },
-  gadgets:  { name: 'Gadgets',  color: '#5ac8e0' },
-  home:     { name: 'Home',     color: '#d9a06b' },
-  outdoor:  { name: 'Outdoor',  color: '#6fbf73' },
-  beauty:   { name: 'Beauty',   color: '#c792ea' },
-  toys:     { name: 'Toys',     color: '#ffd24d' },
-  food:     { name: 'Food',     color: '#ff8f5a' },
-  fitness:  { name: 'Fitness',  color: '#7de8c3' },
+  apparel:  { name: 'Apparel',  color: '#e06fae', freq: 1.15 },
+  gadgets:  { name: 'Gadgets',  color: '#5ac8e0', freq: 0.85 },
+  home:     { name: 'Home',     color: '#d9a06b', freq: 1.15 },
+  outdoor:  { name: 'Outdoor',  color: '#6fbf73', freq: 1.0 },
+  beauty:   { name: 'Beauty',   color: '#c792ea', freq: 1.3 },
+  toys:     { name: 'Toys',     color: '#ffd24d', freq: 1.0 },
+  food:     { name: 'Food',     color: '#ff8f5a', freq: 1.55 },
+  fitness:  { name: 'Fitness',  color: '#7de8c3', freq: 1.25 },
 };
 
 export const CATALOG = [
